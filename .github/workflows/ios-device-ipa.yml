@@ -128,8 +128,12 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build > /tmp/xcodebuild.log 2>&1 || {
-              echo "::error::xcodebuild failed — last 40 lines:"
-              tail -40 /tmp/xcodebuild.log
+              echo "::error::xcodebuild failed"
+              echo "--- real errors ---"
+              grep -nE "error:|error :|Command .* failed|The following build commands failed|codesign|CodeSign" \
+                /tmp/xcodebuild.log | head -30 || true
+              echo "--- last 25 lines ---"
+              tail -25 /tmp/xcodebuild.log
               exit 1
             }
           grep -E "BUILD SUCCEEDED" /tmp/xcodebuild.log || tail -5 /tmp/xcodebuild.log
@@ -157,6 +161,15 @@ jobs:
           file "$BIN" || true
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
             "/tmp/ipa/Payload/${APP}.app/Info.plist"
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: /tmp/xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
