@@ -46,11 +46,15 @@ jobs:
               break
             fi
           done
-          xcodebuild -version
-          xcodebuild -version | grep -q "Xcode 1[6-9]" || {
-            echo "::error::no Xcode >= 16.1 available on this runner image"
-            exit 1
-          }
+          # NB: capture then match. `xcodebuild -version | grep -q` under
+          # `set -o pipefail` reports failure because grep exits early and
+          # xcodebuild dies on SIGPIPE — that produced a false negative here.
+          XV="$(xcodebuild -version)"
+          echo "$XV"
+          case "$XV" in
+            *"Xcode 1"[6-9].*|*"Xcode 2"*) : ;;
+            *) echo "::error::no Xcode >= 16.1 on this runner image"; exit 1 ;;
+          esac
 
       - uses: actions/setup-node@v4
         with:
