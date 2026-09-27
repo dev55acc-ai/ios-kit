@@ -50,10 +50,6 @@
     "experiments": {
       "typedRoutes": true
     },
-    "platforms": [
-      "ios",
-      "web"
-    ],
     "extra": {
       "router": {},
       "eas": {
@@ -61,6 +57,10 @@
       }
     },
     "runtimeVersion": "1.0.0",
-    "owner": "dafnimos"
+    "owner": "dafnimos",
+    "platforms": [
+      "ios",
+      "web"
+    ]
   }
 }
