@@ -39,6 +39,15 @@
       "env": {
         "EXPO_NO_BUNDLE_SPLITTING": "1"
       }
+    },
+    "unsigned": {
+      "distribution": "internal",
+      "ios": {
+        "withoutCredentials": true
+      },
+      "env": {
+        "EXPO_NO_BUNDLE_SPLITTING": "1"
+      }
     }
   },
   "submit": {

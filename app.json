@@ -54,13 +54,13 @@
       "ios",
       "web"
     ],
-    "owner": "dafnimos",
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "00cdb837-e123-49f2-b9eb-cd450bd668c3"
+        "projectId": "3a932f1d-0f8c-4c2b-a98d-618b79410df6"
       }
     },
-    "runtimeVersion": "1.0.0"
+    "runtimeVersion": "1.0.0",
+    "owner": "dafnimos"
   }
 }
