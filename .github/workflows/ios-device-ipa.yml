@@ -25,7 +25,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-15 ships a newer Xcode. macos-14 tops out at 16.2 (Swift 6.0) and
+    # expo-modules-jsi needs Swift tools 6.2 => Xcode >= 16.4.
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
@@ -36,7 +38,7 @@ jobs:
           set -euo pipefail
           echo "installed:"
           ls -1 /Applications | grep -i xcode || true
-          for v in 16.4 16.3 16.2 16.1; do
+          for v in 26 16.4 16.3 16.2 16.1; do
             if [ -d "/Applications/Xcode_${v}.app" ]; then
               sudo xcode-select -s "/Applications/Xcode_${v}.app"
               echo "selected Xcode_${v}.app"
@@ -46,11 +48,19 @@ jobs:
           # Capture, then match. `xcodebuild -version | grep -q` under
           # `set -o pipefail` gives a false negative: grep exits at the first
           # match, xcodebuild takes SIGPIPE, the pipeline reports failure.
+          for a in /Applications/Xcode*.app; do
+            [ -d "$a" ] || continue
+            printf '%s -> %s\n' "$(basename "$a")" \
+              "$(DEVELOPER_DIR="$a/Contents/Developer" xcrun swiftc --version 2>/dev/null | head -1)"
+          done
           XV="$(xcodebuild -version)"
           echo "$XV"
-          case "$XV" in
-            *"Xcode 1"[6-9].*|*"Xcode 2"*) : ;;
-            *) echo "::error::no Xcode >= 16.1 on this image"; exit 1 ;;
+          # Swift 6.2 (Xcode 16.4) or newer is required by expo-modules-jsi.
+          SW="$(xcrun swiftc --version 2>/dev/null | head -1)"
+          echo "$SW"
+          case "$SW" in
+            *"Swift version 6."[2-9]*|*"Swift version 7"*) : ;;
+            *) echo "::error::need Swift >= 6.2 (Xcode >= 16.4); got: $SW"; exit 1 ;;
           esac
 
       - uses: actions/setup-node@v4
