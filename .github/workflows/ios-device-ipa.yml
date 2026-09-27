@@ -25,18 +25,32 @@ concurrency:
 
 jobs:
   build:
-    # 14 is the newest image with the full Xcode 16 toolchain
+      # React Native 0.86 requires Xcode >= 16.1. macos-14 ships 15.4, so we must
+    # move to the arm64 image that has 16.x and select it explicitly.
     runs-on: macos-14
     timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
+      - name: Select Xcode (RN 0.86 needs >= 16.1)
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.app 2>/dev/null || true
+          set -euo pipefail
+          echo "installed Xcodes:"
+          ls -1 /Applications | grep -i xcode || true
+          # newest first; RN needs >= 16.1
+          for v in 16.4 16.3 16.2 16.1; do
+            if [ -d "/Applications/Xcode_${v}.app" ]; then
+              sudo xcode-select -s "/Applications/Xcode_${v}.app"
+              echo "selected Xcode_${v}.app"
+              break
+            fi
+          done
           xcodebuild -version
-          sw_vers
+          xcodebuild -version | grep -q "Xcode 1[6-9]" || {
+            echo "::error::no Xcode >= 16.1 available on this runner image"
+            exit 1
+          }
 
       - uses: actions/setup-node@v4
         with:
