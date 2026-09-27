@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Nimos",
-    "slug": "nimos",
+    "name": "ioskit",
+    "slug": "ios-kit",
     "scheme": "nimos",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -11,7 +11,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "ca.motionmenu.nimos",
+      "bundleIdentifier": "ca.motionmenu.ioskit",
       "requireFullScreen": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false

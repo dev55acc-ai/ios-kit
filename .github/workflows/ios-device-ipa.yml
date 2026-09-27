@@ -85,31 +85,36 @@ jobs:
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: npx pod-install ios
 
-      - name: Resolve the app name and scheme
+      - name: Resolve workspace, project, scheme and app bundle
         id: meta
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: |
-          APP_NAME=$(node -p "require('./app.json').expo.name")
-          SCHEME=$(node -e "
-            const fs=require('fs');
-            const d='ios';
-            const dir=fs.readdirSync(d).find(f=>f.endsWith('.xcodeproj'));
-            const p=d+'/'+dir+'/xcshareddata/xcschemes';
-            const s=fs.existsSync(p)?fs.readdirSync(p).map(f=>f.replace('.xcscheme',''))[0]:'';
-            console.log(s || '${APP_NAME}'.replace(/[^A-Za-z0-9]/g,''));
-          ")
-          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
-          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
-          echo "app=$APP_NAME" >> "$GITHUB_ENV"
-          echo "scheme=$SCHEME" >> "$GITHUB_ENV"
+          set -euo pipefail
+          # Never assume the .xcworkspace is named after the display name — Expo
+          # sanitises it (spaces/dashes stripped), and guessing produced
+          # "'ios/.xcworkspace' does not exist" here.
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          PROJECT=$(ls -d ios/*.xcodeproj | head -1)
+          SCHEME=$(ls ios/*/xcshareddata/xcschemes/*.xcscheme 2>/dev/null | head -1 | xargs -r basename | sed 's/.xcscheme$//')
+          [ -n "$SCHEME" ] || SCHEME=$(basename "$PROJECT" .xcodeproj)
+          APP=$(basename "$WORKSPACE" .xcworkspace)
+          echo "workspace : $WORKSPACE"
+          echo "project   : $PROJECT"
+          echo "scheme    : $SCHEME"
+          echo "app       : $APP"
+          echo "app=$APP"                 >> "$GITHUB_ENV"
+          echo "scheme=$SCHEME"           >> "$GITHUB_ENV"
+          echo "workspace=$WORKSPACE"     >> "$GITHUB_ENV"
+          echo "app_name=$APP"            >> "$GITHUB_OUTPUT"
+          echo "scheme_out=$SCHEME"       >> "$GITHUB_OUTPUT"
 
       - name: Build unsigned device binary
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: |
           set -o pipefail
           xcodebuild \
-            -workspace "ios/${APP_NAME}.xcworkspace" \
-            -scheme "${SCHEME}" \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -128,7 +133,7 @@ jobs:
       - name: Package the .ipa
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: |
-          APP_PATH="ios/build/Build/Products/Release-iphoneos/${APP_NAME}.app"
+          APP_PATH="ios/build/Build/Products/Release-iphoneos/${APP}.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "::error::app not found at $APP_PATH"
             find ios/build/Build/Products -maxdepth 2 -name "*.app" || true
@@ -137,14 +142,15 @@ jobs:
           rm -rf /tmp/ipa && mkdir -p /tmp/ipa/Payload
           cp -R "$APP_PATH" /tmp/ipa/Payload/
           # strip the stale signature; AltStore re-signs from scratch anyway
-          rm -rf /tmp/ipa/Payload/"${APP_NAME}.app/_CodeSignature" || true
-          printf '{\n  "application-identifier": "TEMP",\n}\n' > /tmp/ipa/Payload/embedded.mobileprovision || true
-          (cd /tmp/ipa && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-unsigned.ipa" Payload)
+          rm -rf "/tmp/ipa/Payload/${APP}.app/_CodeSignature" || true
+          (cd /tmp/ipa && zip -qry "$GITHUB_WORKSPACE/${APP}-unsigned.ipa" Payload)
           cd "$GITHUB_WORKSPACE"
           ls -lh *-unsigned.ipa
           # prove it is a device (arm64) binary, not a simulator one
-          lipo -info "/tmp/ipa/Payload/${APP_NAME}.app/${APP_NAME}" || true
-          file "/tmp/ipa/Payload/${APP_NAME}.app/${APP_NAME}" || true
+          BIN="/tmp/ipa/Payload/${APP}.app/${APP}"
+          lipo -info "$BIN" || true
+          file "$BIN" || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "/tmp/ipa/Payload/${APP}.app/Info.plist"
 
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
@@ -160,7 +166,7 @@ jobs:
             echo "### iOS device build (unsigned)"
             echo ""
             echo "- app: \`${{ steps.meta.outputs.app_name }}\`"
-            echo "- scheme: \`${{ steps.meta.outputs.scheme }}\`"
+            echo "- scheme: \`${{ steps.meta.outputs.scheme_out }}\`"
             echo ""
             echo "Install it on an iPhone with a FREE Apple ID:"
             echo "1. download the \`-unsigned.ipa\` artifact below"
