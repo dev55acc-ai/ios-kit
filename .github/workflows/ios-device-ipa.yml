@@ -1,0 +1,152 @@
+name: ios-device-ipa
+# Build a real, native, UNSIGNED device .ipa on GitHub's free macOS runners.
+#
+# Why unsigned: a signed device build needs Apple credentials, which needs the
+# $99 programme. We deliberately do not sign here. The .ipa comes out unsigned
+# and gets re-signed on the developer's own machine by AltStore/SideStore using
+# a FREE Apple ID (7-day auto refresh). Net cost: $0, no Apple membership.
+#
+# Xcode is macOS-only, which is exactly why this runs on a macOS runner — the
+# one place a Windows/Linux box can get a real iOS toolchain for free.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_dir:
+        description: "App directory (default: repo root)"
+        required: false
+        default: "."
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # 14 is the newest image with the full Xcode 16 toolchain
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.app 2>/dev/null || true
+          xcodebuild -version
+          sw_vers
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
+        run: npm install --no-audit --no-fund
+
+      - name: Prebuild the native iOS project
+        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
+        env:
+          # Xcode has no secrets to leak here: the build is unsigned on purpose.
+          EXPO_NO_TELEMETRY: "1"
+          CI: "1"
+        run: |
+          npx expo prebuild --platform ios --clean --no-install
+          ls ios
+
+      - name: Install CocoaPods
+        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
+        run: |
+          sudo gem install cocoapods --no-document -v 1.16.2 || true
+          pod --version
+
+      - name: Pod install
+        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
+        run: npx pod-install ios
+
+      - name: Resolve the app name and scheme
+        id: meta
+        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
+        run: |
+          APP_NAME=$(node -p "require('./app.json').expo.name")
+          SCHEME=$(node -e "
+            const fs=require('fs');
+            const d='ios';
+            const dir=fs.readdirSync(d).find(f=>f.endsWith('.xcodeproj'));
+            const p=d+'/'+dir+'/xcshareddata/xcschemes';
+            const s=fs.existsSync(p)?fs.readdirSync(p).map(f=>f.replace('.xcscheme',''))[0]:'';
+            console.log(s || '${APP_NAME}'.replace(/[^A-Za-z0-9]/g,''));
+          ")
+          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "app=$APP_NAME" >> "$GITHUB_ENV"
+          echo "scheme=$SCHEME" >> "$GITHUB_ENV"
+
+      - name: Build unsigned device binary
+        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace "ios/${APP_NAME}.xcworkspace" \
+            -scheme "${SCHEME}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build \
+            | tee /tmp/xcodebuild.log \
+            | grep -E "^(Compile|CompileSwift|CompileC|Ld|PhaseScriptExecution|error:|warning: no rule)" \
+            | tail -40
+          echo "--- tail of build log ---"
+          tail -20 /tmp/xcodebuild.log
+
+      - name: Package the .ipa
+        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
+        run: |
+          APP_PATH="ios/build/Build/Products/Release-iphoneos/${APP_NAME}.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::app not found at $APP_PATH"
+            find ios/build/Build/Products -maxdepth 2 -name "*.app" || true
+            exit 1
+          fi
+          rm -rf /tmp/ipa && mkdir -p /tmp/ipa/Payload
+          cp -R "$APP_PATH" /tmp/ipa/Payload/
+          # strip the stale signature; AltStore re-signs from scratch anyway
+          rm -rf /tmp/ipa/Payload/"${APP_NAME}.app/_CodeSignature" || true
+          printf '{\n  "application-identifier": "TEMP",\n}\n' > /tmp/ipa/Payload/embedded.mobileprovision || true
+          (cd /tmp/ipa && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-unsigned.ipa" Payload)
+          cd "$GITHUB_WORKSPACE"
+          ls -lh *-unsigned.ipa
+          # prove it is a device (arm64) binary, not a simulator one
+          lipo -info "/tmp/ipa/Payload/${APP_NAME}.app/${APP_NAME}" || true
+          file "/tmp/ipa/Payload/${APP_NAME}.app/${APP_NAME}" || true
+
+      - name: Upload the .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: ${{ github.workspace }}/*-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          {
+            echo "### iOS device build (unsigned)"
+            echo ""
+            echo "- app: \`${{ steps.meta.outputs.app_name }}\`"
+            echo "- scheme: \`${{ steps.meta.outputs.scheme }}\`"
+            echo ""
+            echo "Install it on an iPhone with a FREE Apple ID:"
+            echo "1. download the \`-unsigned.ipa\` artifact below"
+            echo "2. on Windows: install AltStore (altstore.io) and connect the iPhone by USB"
+            echo "3. AltStore → My Apps → \`+\` → pick the .ipa → it re-signs with your Apple ID"
+            echo "4. enable AltStore auto-refresh so it re-signs every 7 days without you"
+          } >> "$GITHUB_STEP_SUMMARY"
