@@ -38,16 +38,37 @@ jobs:
           set -euo pipefail
           echo "installed:"
           ls -1 /Applications | grep -i xcode || true
-          for v in 26 16.4 16.3 16.2 16.1; do
-            if [ -d "/Applications/Xcode_${v}.app" ]; then
-              sudo xcode-select -s "/Applications/Xcode_${v}.app"
-              echo "selected Xcode_${v}.app"
-              break
+          # Rank what is ACTUALLY installed and pick the newest whose Swift is
+          # >= 6.2. Hardcoding a version list failed here: the image ships
+          # Xcode_26.3.app (Swift 6.2.4), not "Xcode_26.app".
+          best=""
+          for a in /Applications/Xcode*.app; do
+            [ -d "$a" ] || continue
+            ver="$(basename "$a" .app)"
+            num="${ver#Xcode_}"
+            sv="$(DEVELOPER_DIR="$a/Contents/Developer" xcrun swiftc --version 2>/dev/null | head -1 || true)"
+            sv="${sv#*Swift version }"
+            sv="${sv%% *}"
+            major="${sv%%.*}"; rest="${sv#*.}"; minor="${rest%%.*}"
+            ok=0
+            if [ "$major" -ge 7 ] 2>/dev/null; then ok=1
+            elif [ "$major" -eq 6 ] 2>/dev/null && [ "$minor" -ge 2 ] 2>/dev/null; then ok=1
+            fi
+            if [ "$ok" = "1" ]; then
+              # higher version wins (26 > 16)
+              if [ -z "$best" ] || [ "${num%%.*}" -gt "${best%%.*}" ] || \
+                 { [ "${num%%.*}" = "${best%%.*}" ] && [ "${num#*.}" -gt "${best#*.}" ]; }; then
+                best="$num"
+              fi
             fi
           done
-          # Capture, then match. `xcodebuild -version | grep -q` under
-          # `set -o pipefail` gives a false negative: grep exits at the first
-          # match, xcodebuild takes SIGPIPE, the pipeline reports failure.
+          if [ -z "$best" ]; then
+            echo "::error::no Xcode with Swift >= 6.2 on this image"
+            exit 1
+          fi
+          sudo xcode-select -s "/Applications/Xcode_${best}.app"
+          echo "selected Xcode_${best}.app"
+
           # `|| true` is load-bearing: under `set -o pipefail` a single xcrun
           # probe that fails (unsupported/unlicensed toolchain) aborts the whole
           # step, which is how this job died right after printing the list.
