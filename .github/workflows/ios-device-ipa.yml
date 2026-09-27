@@ -131,6 +131,11 @@ jobs:
           has CODE_SIGNING_ALLOWED  || extra+=(CODE_SIGNING_ALLOWED=NO)
           has CODE_SIGNING_REQUIRED  || extra+=(CODE_SIGNING_REQUIRED=NO)
           has CODE_SIGN_IDENTITY     || extra+=(CODE_SIGN_IDENTITY="")
+          # Expo SDK 57's expo-modules-jsi declares swift-tools-version 6.2, which
+          # makes the compiler default to Swift 6 language mode — and its own code
+          # then fails ("'weak' must be a mutable variable"). Pinning the
+          # LANGUAGE mode to 5 while keeping the 6.2 tools version resolves it.
+          has SWIFT_VERSION          || extra+=(SWIFT_VERSION=5.0)
           exec /usr/bin/xcodebuild "$@" ${extra[@]+"${extra[@]}"}
           SHIM
           chmod +x /tmp/xcw/xcodebuild
@@ -161,6 +166,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            SWIFT_VERSION=5.0 \
             build > /tmp/xcodebuild.log 2>&1 || {
               echo "::error::xcodebuild failed"
               echo "--- real errors ---"
