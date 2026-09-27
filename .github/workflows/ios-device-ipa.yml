@@ -1,19 +1,19 @@
 name: ios-device-ipa
 # Build a real, native, UNSIGNED device .ipa on GitHub's free macOS runners.
 #
-# Why unsigned: a signed device build needs Apple credentials, which needs the
-# $99 programme. We deliberately do not sign here. The .ipa comes out unsigned
-# and gets re-signed on the developer's own machine by AltStore/SideStore using
-# a FREE Apple ID (7-day auto refresh). Net cost: $0, no Apple membership.
+# Why unsigned on purpose: a *signed* device build needs Apple credentials, which
+# needs the $99/yr programme. We do not sign here. The unsigned .ipa is re-signed
+# on the developer's own machine by AltStore/SideStore using a FREE Apple ID
+# (7-day auto refresh). Net cost $0, no Apple membership, no Mac.
 #
-# Xcode is macOS-only, which is exactly why this runs on a macOS runner — the
-# one place a Windows/Linux box can get a real iOS toolchain for free.
+# Xcode is macOS-only — that is exactly why this runs on a macOS runner: it is
+# the one place a Windows/Linux box can get a real iOS toolchain for free.
 
 on:
   workflow_dispatch:
     inputs:
       app_dir:
-        description: "App directory (default: repo root)"
+        description: "App directory relative to the repo root"
         required: false
         default: "."
   push:
@@ -25,8 +25,6 @@ concurrency:
 
 jobs:
   build:
-      # React Native 0.86 requires Xcode >= 16.1. macos-14 ships 15.4, so we must
-    # move to the arm64 image that has 16.x and select it explicitly.
     runs-on: macos-14
     timeout-minutes: 45
 
@@ -36,9 +34,8 @@ jobs:
       - name: Select Xcode (RN 0.86 needs >= 16.1)
         run: |
           set -euo pipefail
-          echo "installed Xcodes:"
+          echo "installed:"
           ls -1 /Applications | grep -i xcode || true
-          # newest first; RN needs >= 16.1
           for v in 16.4 16.3 16.2 16.1; do
             if [ -d "/Applications/Xcode_${v}.app" ]; then
               sudo xcode-select -s "/Applications/Xcode_${v}.app"
@@ -46,14 +43,14 @@ jobs:
               break
             fi
           done
-          # NB: capture then match. `xcodebuild -version | grep -q` under
-          # `set -o pipefail` reports failure because grep exits early and
-          # xcodebuild dies on SIGPIPE — that produced a false negative here.
+          # Capture, then match. `xcodebuild -version | grep -q` under
+          # `set -o pipefail` gives a false negative: grep exits at the first
+          # match, xcodebuild takes SIGPIPE, the pipeline reports failure.
           XV="$(xcodebuild -version)"
           echo "$XV"
           case "$XV" in
             *"Xcode 1"[6-9].*|*"Xcode 2"*) : ;;
-            *) echo "::error::no Xcode >= 16.1 on this runner image"; exit 1 ;;
+            *) echo "::error::no Xcode >= 16.1 on this image"; exit 1 ;;
           esac
 
       - uses: actions/setup-node@v4
@@ -68,50 +65,34 @@ jobs:
       - name: Prebuild the native iOS project
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         env:
-          # Xcode has no secrets to leak here: the build is unsigned on purpose.
           EXPO_NO_TELEMETRY: "1"
           CI: "1"
-        run: |
-          npx expo prebuild --platform ios --clean --no-install
-          ls ios
+        run: npx expo prebuild --platform ios --clean --no-install
 
       - name: Install CocoaPods
-        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: |
-          sudo gem install cocoapods --no-document -v 1.16.2 || true
+          set -euo pipefail
+          sudo gem install cocoapods --no-document -v 1.16.2
           pod --version
 
       - name: Pod install
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: npx pod-install ios
 
-      - name: Resolve workspace, project, scheme and app bundle
-        id: meta
-        working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
-        run: |
-          set -euo pipefail
-          # Never assume the .xcworkspace is named after the display name — Expo
-          # sanitises it (spaces/dashes stripped), and guessing produced
-          # "'ios/.xcworkspace' does not exist" here.
-          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
-          PROJECT=$(ls -d ios/*.xcodeproj | head -1)
-          SCHEME=$(ls ios/*/xcshareddata/xcschemes/*.xcscheme 2>/dev/null | head -1 | xargs -r basename | sed 's/.xcscheme$//')
-          [ -n "$SCHEME" ] || SCHEME=$(basename "$PROJECT" .xcodeproj)
-          APP=$(basename "$WORKSPACE" .xcworkspace)
-          echo "workspace : $WORKSPACE"
-          echo "project   : $PROJECT"
-          echo "scheme    : $SCHEME"
-          echo "app       : $APP"
-          echo "app=$APP"                 >> "$GITHUB_ENV"
-          echo "scheme=$SCHEME"           >> "$GITHUB_ENV"
-          echo "workspace=$WORKSPACE"     >> "$GITHUB_ENV"
-          echo "app_name=$APP"            >> "$GITHUB_OUTPUT"
-          echo "scheme_out=$SCHEME"       >> "$GITHUB_OUTPUT"
-
+      # Resolve the project from disk in every step that needs it. Guessing the
+      # workspace name from the display name is what produced
+      # "'ios/.xcworkspace' does not exist" on the first attempt.
       - name: Build unsigned device binary
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: |
-          set -o pipefail
+          set -euo pipefail
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          PROJECT=$(ls -d ios/*.xcodeproj | head -1)
+          SCHEME=$(ls ios/*/xcshareddata/xcschemes/*.xcscheme 2>/dev/null | head -1 \
+                   | xargs -r basename | sed 's/.xcscheme$//')
+          [ -n "$SCHEME" ] || SCHEME=$(basename "$PROJECT" .xcodeproj)
+          echo "workspace=$WORKSPACE"
+          echo "scheme=$SCHEME"
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
@@ -122,35 +103,36 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
-            build \
-            | tee /tmp/xcodebuild.log \
-            | grep -E "^(Compile|CompileSwift|CompileC|Ld|PhaseScriptExecution|error:|warning: no rule)" \
-            | tail -40
-          echo "--- tail of build log ---"
-          tail -20 /tmp/xcodebuild.log
+            build > /tmp/xcodebuild.log 2>&1 || {
+              echo "::error::xcodebuild failed — last 40 lines:"
+              tail -40 /tmp/xcodebuild.log
+              exit 1
+            }
+          grep -E "BUILD SUCCEEDED" /tmp/xcodebuild.log || tail -5 /tmp/xcodebuild.log
 
       - name: Package the .ipa
         working-directory: ${{ github.workspace }}/${{ inputs.app_dir || '.' }}
         run: |
+          set -euo pipefail
+          APP=$(basename "$(ls -d ios/*.xcworkspace | head -1)" .xcworkspace)
           APP_PATH="ios/build/Build/Products/Release-iphoneos/${APP}.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "::error::app not found at $APP_PATH"
-            find ios/build/Build/Products -maxdepth 2 -name "*.app" || true
+            echo "::error::no .app at $APP_PATH"
+            find ios/build/Build/Products -maxdepth 2 -name '*.app' || true
             exit 1
           fi
           rm -rf /tmp/ipa && mkdir -p /tmp/ipa/Payload
           cp -R "$APP_PATH" /tmp/ipa/Payload/
-          # strip the stale signature; AltStore re-signs from scratch anyway
           rm -rf "/tmp/ipa/Payload/${APP}.app/_CodeSignature" || true
-          (cd /tmp/ipa && zip -qry "$GITHUB_WORKSPACE/${APP}-unsigned.ipa" Payload)
+          ( cd /tmp/ipa && zip -qry "$GITHUB_WORKSPACE/${APP}-unsigned.ipa" Payload )
           cd "$GITHUB_WORKSPACE"
           ls -lh *-unsigned.ipa
-          # prove it is a device (arm64) binary, not a simulator one
           BIN="/tmp/ipa/Payload/${APP}.app/${APP}"
+          echo "--- binary ---"
           lipo -info "$BIN" || true
           file "$BIN" || true
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "/tmp/ipa/Payload/${APP}.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+            "/tmp/ipa/Payload/${APP}.app/Info.plist"
 
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
@@ -160,17 +142,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Summary
+      - name: Install instructions
         run: |
           {
-            echo "### iOS device build (unsigned)"
+            echo "### iOS device build (unsigned) — install with a FREE Apple ID"
             echo ""
-            echo "- app: \`${{ steps.meta.outputs.app_name }}\`"
-            echo "- scheme: \`${{ steps.meta.outputs.scheme_out }}\`"
+            echo "1. Download the \`ios-unsigned-ipa\` artifact and unzip it to get the .ipa"
+            echo "2. On **Windows**: install AltStore (altstore.io), connect the iPhone by USB"
+            echo "3. In AltStore: **My Apps → +** → pick the .ipa. It re-signs it with your Apple ID"
+            echo "4. Turn on **AltStore → Settings → Automatic Refresh** so it re-signs every 7 days"
             echo ""
-            echo "Install it on an iPhone with a FREE Apple ID:"
-            echo "1. download the \`-unsigned.ipa\` artifact below"
-            echo "2. on Windows: install AltStore (altstore.io) and connect the iPhone by USB"
-            echo "3. AltStore → My Apps → \`+\` → pick the .ipa → it re-signs with your Apple ID"
-            echo "4. enable AltStore auto-refresh so it re-signs every 7 days without you"
+            echo "No Apple Developer membership required. No Mac required."
           } >> "$GITHUB_STEP_SUMMARY"
