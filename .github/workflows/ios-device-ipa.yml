@@ -48,15 +48,18 @@ jobs:
           # Capture, then match. `xcodebuild -version | grep -q` under
           # `set -o pipefail` gives a false negative: grep exits at the first
           # match, xcodebuild takes SIGPIPE, the pipeline reports failure.
+          # `|| true` is load-bearing: under `set -o pipefail` a single xcrun
+          # probe that fails (unsupported/unlicensed toolchain) aborts the whole
+          # step, which is how this job died right after printing the list.
           for a in /Applications/Xcode*.app; do
             [ -d "$a" ] || continue
-            printf '%s -> %s\n' "$(basename "$a")" \
-              "$(DEVELOPER_DIR="$a/Contents/Developer" xcrun swiftc --version 2>/dev/null | head -1)"
+            v="$(DEVELOPER_DIR="$a/Contents/Developer" xcrun swiftc --version 2>/dev/null | head -1 || true)"
+            printf '%s -> %s\n' "$(basename "$a")" "${v:-unavailable}"
           done
           XV="$(xcodebuild -version)"
           echo "$XV"
           # Swift 6.2 (Xcode 16.4) or newer is required by expo-modules-jsi.
-          SW="$(xcrun swiftc --version 2>/dev/null | head -1)"
+          SW="$(xcrun swiftc --version 2>/dev/null | head -1 || true)"
           echo "$SW"
           case "$SW" in
             *"Swift version 6."[2-9]*|*"Swift version 7"*) : ;;
